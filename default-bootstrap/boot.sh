@@ -123,6 +123,13 @@ log "tracemeld"
 npm install -g tracemeld@latest >/dev/null 2>&1
 
 # ============================================================
+# 7b. Textual-MCP (Textual TUI framework MCP server)
+# ============================================================
+log "Textual-MCP"
+pip install --break-system-packages -q textual-mcp-server >/dev/null 2>&1 ||
+	uv pip install --system textual-mcp-server >/dev/null 2>&1 || true
+
+# ============================================================
 # 8. ripvec (build from source)
 # ============================================================
 log "ripvec"
@@ -451,6 +458,11 @@ cat >~/.claude/.mcp.json <<'MCP_EOF'
     "CodSpeed": {
       "type": "http",
       "url": "https://mcp.codspeed.io/mcp"
+    },
+    "Textual-MCP": {
+      "command": "uv",
+      "args": ["run", "--with", "textual-mcp-server", "textual-mcp-server"],
+      "env": {}
     }
   }
 }
