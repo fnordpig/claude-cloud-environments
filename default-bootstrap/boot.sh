@@ -10,149 +10,209 @@ set -euo pipefail
 #
 # Runs as root on Ubuntu 24.04 BEFORE Claude Code launches.
 # Only runs on new sessions (skipped on resume).
+#
+# Strategy: apt first (provides system libs), then all package
+# managers run in parallel as background jobs.
 # ============================================================
 
 BOOTSTRAP_START=$(date +%s)
+PIDS=()
 
 log() { echo "=== Bootstrap: $1 ==="; }
 
+# Track background jobs; fail the bootstrap if any critical one fails
+track() { PIDS+=("$!:$1"); }
+
+wait_all() {
+	local failed=0
+	for entry in "${PIDS[@]}"; do
+		local pid="${entry%%:*}"
+		local name="${entry#*:}"
+		if ! wait "$pid"; then
+			echo "WARNING: $name failed (non-fatal)" >&2
+			failed=$((failed + 1))
+		fi
+	done
+	PIDS=()
+	return 0 # non-fatal — individual steps use || true for optional bits
+}
+
 # ============================================================
-# 1. System packages
+# Phase 1: System packages (must complete before parallel phase)
 # ============================================================
 log "System packages"
 apt-get update -qq
 apt-get install -y -qq \
-	build-essential cmake pkg-config \
-	jq ripgrep fd-find unzip \
-	libssl-dev libsqlite3-dev \
-	python3-pip python3-venv \
+	build-essential cmake pkg-config autoconf automake libtool \
+	jq ripgrep fd-find unzip zip \
+	curl wget \
+	libssl-dev libsqlite3-dev zlib1g-dev libffi-dev \
+	python3-pip python3-venv python3-dev \
 	shellcheck \
-	clangd \
+	clangd clang-format \
+	sqlite3 \
+	htop strace \
+	tree file less \
+	tmux \
+	bat \
+	gh \
+	fzf \
 	>/dev/null 2>&1
 
-# shfmt (not in Ubuntu repos, grab binary)
-if ! command -v shfmt &>/dev/null; then
-	curl -fsSL "https://github.com/mvdan/sh/releases/latest/download/shfmt_v3.10.0_linux_amd64" \
-		-o /usr/local/bin/shfmt && chmod +x /usr/local/bin/shfmt
-fi
-
 # ============================================================
-# 2. Node.js / npm (usually pre-installed on cloud image)
+# Phase 2: Parallel installs — all independent of each other
+#
+# After apt, these four tracks have no shared state:
+#   A) npm global packages  (LSP servers, tracemeld)
+#   B) pip global packages  (Python LSP tools, cozempic, textual-mcp)
+#   C) Rust toolchain + ripvec build
+#   D) Binary downloads     (shfmt, terraform-ls, delta)
+#   E) Claude Code config   (instant writes, no network)
 # ============================================================
-if ! command -v node &>/dev/null; then
-	log "Node.js"
-	curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null 2>&1
-	apt-get install -y -qq nodejs >/dev/null 2>&1
-fi
 
-# ============================================================
-# 3. uv (Python package manager, likely pre-installed)
-# ============================================================
-if ! command -v uv &>/dev/null; then
-	log "uv"
-	curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
-	export PATH="$HOME/.local/bin:$PATH"
-fi
+# --- Track A: npm globals -----------------------------------
+install_npm() {
+	log "npm globals"
 
-# ============================================================
-# 4. Rust toolchain (for building ripvec-mcp)
-# ============================================================
-if ! command -v cargo &>/dev/null; then
-	log "Rust toolchain"
-	curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y >/dev/null 2>&1
-	# shellcheck source=/dev/null
-	source "$HOME/.cargo/env"
-fi
-# Ensure cargo is on PATH for the rest of the script
-export PATH="$HOME/.cargo/bin:$PATH"
+	# Ensure node exists (usually pre-installed)
+	if ! command -v node &>/dev/null; then
+		curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null 2>&1
+		apt-get install -y -qq nodejs >/dev/null 2>&1
+	fi
 
-# rust-analyzer for the Rust LSP plugin
-rustup component add rust-analyzer >/dev/null 2>&1 || true
+	# LSP servers (one npm install for speed)
+	npm install -g \
+		bash-language-server \
+		@vtsls/language-server \
+		vscode-langservers-extracted \
+		yaml-language-server \
+		unified-language-server \
+		sql-language-server \
+		dockerfile-language-server-nodejs \
+		>/dev/null 2>&1 || true
 
-# ============================================================
-# 5. LSP servers (for zircote-lsp plugins)
-# ============================================================
-log "LSP servers"
+	# MCP servers + CLI tools
+	npm install -g \
+		tracemeld@latest \
+		>/dev/null 2>&1
+}
+install_npm &
+track "$!" "npm globals"
 
-# Python: pyright, ruff, black, isort, mypy, bandit
-pip install --break-system-packages -q \
-	pyright ruff black isort mypy bandit pytest \
-	>/dev/null 2>&1
+# --- Track B: pip globals -----------------------------------
+install_pip() {
+	log "pip globals"
 
-# Bash: bash-language-server
-npm install -g bash-language-server >/dev/null 2>&1
+	# Ensure uv exists (usually pre-installed)
+	if ! command -v uv &>/dev/null; then
+		curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
+		export PATH="$HOME/.local/bin:$PATH"
+	fi
 
-# TypeScript: vtsls
-npm install -g @vtsls/language-server >/dev/null 2>&1
+	# Python LSP + dev tools
+	pip install --break-system-packages -q \
+		pyright ruff black isort mypy bandit pytest \
+		>/dev/null 2>&1
 
-# JSON/YAML/Markdown: vscode language servers
-npm install -g \
-	vscode-langservers-extracted \
-	yaml-language-server \
-	unified-language-server \
-	>/dev/null 2>&1
+	# Cozempic (context weight-loss tool)
+	pip install --break-system-packages -q cozempic >/dev/null 2>&1 || true
 
-# SQL: sql-language-server
-npm install -g sql-language-server >/dev/null 2>&1 || true
+	# Textual-MCP (Textual TUI framework MCP server)
+	pip install --break-system-packages -q textual-mcp-server >/dev/null 2>&1 || true
+}
+install_pip &
+track "$!" "pip globals"
 
-# Dockerfile: dockerfile-language-server
-npm install -g dockerfile-language-server-nodejs >/dev/null 2>&1 || true
+# --- Track C: Rust toolchain + ripvec -----------------------
+install_rust() {
+	log "Rust toolchain + ripvec"
 
-# Terraform: terraform-ls
-if ! command -v terraform-ls &>/dev/null; then
-	curl -fsSL https://releases.hashicorp.com/terraform-ls/0.34.3/terraform-ls_0.34.3_linux_amd64.zip \
-		-o /tmp/terraform-ls.zip &&
-		unzip -o /tmp/terraform-ls.zip -d /usr/local/bin/ >/dev/null 2>&1 &&
-		rm /tmp/terraform-ls.zip || true
-fi
+	# Rust toolchain
+	if ! command -v cargo &>/dev/null; then
+		curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y >/dev/null 2>&1
+		# shellcheck source=/dev/null
+		source "$HOME/.cargo/env"
+	fi
+	export PATH="$HOME/.cargo/bin:$PATH"
 
-# Rust cargo tools (optional, used by rust-lsp hooks on-demand)
-cargo install cargo-audit cargo-deny cargo-outdated cargo-machete \
-	>/dev/null 2>&1 || true
+	# rust-analyzer for the Rust LSP plugin
+	rustup component add rust-analyzer >/dev/null 2>&1 || true
 
-# ============================================================
-# 6. Cozempic (context weight-loss tool)
-# ============================================================
-log "Cozempic"
-pip install --break-system-packages -q cozempic >/dev/null 2>&1 || true
+	# Cargo dev tools (used by rust-lsp hooks)
+	cargo install cargo-audit cargo-deny cargo-outdated cargo-machete \
+		>/dev/null 2>&1 || true
 
-# ============================================================
-# 7. tracemeld (npm MCP server + CLI)
-# ============================================================
-log "tracemeld"
-npm install -g tracemeld@latest >/dev/null 2>&1
+	# ripvec (code embedding + MCP server)
+	local ripvec_dir="/opt/ripvec"
+	if [ ! -d "$ripvec_dir" ]; then
+		git clone --depth 1 https://github.com/fnordpig/ripvec.git "$ripvec_dir" >/dev/null 2>&1
+		cd "$ripvec_dir"
+		cargo build --release >/dev/null 2>&1
+		cp target/release/ripvec-mcp /usr/local/bin/ 2>/dev/null || true
+		cp target/release/ripvec /usr/local/bin/ 2>/dev/null || true
+		cd /
+	fi
+}
+install_rust &
+track "$!" "Rust + ripvec"
 
-# ============================================================
-# 7b. Textual-MCP (Textual TUI framework MCP server)
-# ============================================================
-log "Textual-MCP"
-pip install --break-system-packages -q textual-mcp-server >/dev/null 2>&1 ||
-	uv pip install --system textual-mcp-server >/dev/null 2>&1 || true
+# --- Track D: Binary downloads ------------------------------
+install_binaries() {
+	log "Binary downloads"
 
-# ============================================================
-# 8. ripvec (build from source)
-# ============================================================
-log "ripvec"
-RIPVEC_DIR="/opt/ripvec"
-if [ ! -d "$RIPVEC_DIR" ]; then
-	git clone --depth 1 https://github.com/fnordpig/ripvec.git "$RIPVEC_DIR" >/dev/null 2>&1
-	cd "$RIPVEC_DIR"
-	cargo build --release >/dev/null 2>&1
-	# Install the MCP server binary
-	cp target/release/ripvec-mcp /usr/local/bin/ 2>/dev/null || true
-	# Install the main ripvec binary
-	cp target/release/ripvec /usr/local/bin/ 2>/dev/null || true
-	cd /
-fi
+	# shfmt (shell formatter, not in Ubuntu repos)
+	if ! command -v shfmt &>/dev/null; then
+		curl -fsSL "https://github.com/mvdan/sh/releases/latest/download/shfmt_v3.10.0_linux_amd64" \
+			-o /usr/local/bin/shfmt && chmod +x /usr/local/bin/shfmt
+	fi
 
-# ============================================================
-# 9. Write ~/.claude/settings.json
-#    (user-level settings do NOT carry over to cloud sessions)
-# ============================================================
-log "Claude Code settings"
-mkdir -p ~/.claude
+	# terraform-ls
+	if ! command -v terraform-ls &>/dev/null; then
+		curl -fsSL https://releases.hashicorp.com/terraform-ls/0.34.3/terraform-ls_0.34.3_linux_amd64.zip \
+			-o /tmp/terraform-ls.zip &&
+			unzip -o /tmp/terraform-ls.zip -d /usr/local/bin/ >/dev/null 2>&1 &&
+			rm /tmp/terraform-ls.zip || true
+	fi
 
-cat >~/.claude/settings.json <<'SETTINGS_EOF'
+	# delta (better git diff)
+	if ! command -v delta &>/dev/null; then
+		local delta_ver="0.18.2"
+		curl -fsSL "https://github.com/dandavison/delta/releases/download/${delta_ver}/delta-${delta_ver}-x86_64-unknown-linux-gnu.tar.gz" \
+			-o /tmp/delta.tar.gz &&
+			tar -xzf /tmp/delta.tar.gz -C /tmp/ &&
+			cp "/tmp/delta-${delta_ver}-x86_64-unknown-linux-gnu/delta" /usr/local/bin/ &&
+			rm -rf /tmp/delta* || true
+	fi
+
+	# hyperfine (benchmarking)
+	if ! command -v hyperfine &>/dev/null; then
+		local hf_ver="1.19.0"
+		curl -fsSL "https://github.com/sharkdp/hyperfine/releases/download/v${hf_ver}/hyperfine-v${hf_ver}-x86_64-unknown-linux-gnu.tar.gz" \
+			-o /tmp/hyperfine.tar.gz &&
+			tar -xzf /tmp/hyperfine.tar.gz -C /tmp/ &&
+			cp "/tmp/hyperfine-v${hf_ver}-x86_64-unknown-linux-gnu/hyperfine" /usr/local/bin/ &&
+			rm -rf /tmp/hyperfine* || true
+	fi
+
+	# tokei (code statistics)
+	if ! command -v tokei &>/dev/null; then
+		local tokei_ver="13.0.0-alpha.7"
+		curl -fsSL "https://github.com/XAMPPRocky/tokei/releases/download/v${tokei_ver}/tokei-x86_64-unknown-linux-gnu.tar.gz" \
+			-o /tmp/tokei.tar.gz &&
+			tar -xzf /tmp/tokei.tar.gz -C /usr/local/bin/ tokei &&
+			rm /tmp/tokei.tar.gz || true
+	fi
+}
+install_binaries &
+track "$!" "binary downloads"
+
+# --- Track E: Claude Code config (instant, no network) ------
+write_claude_config() {
+	log "Claude Code config"
+	mkdir -p ~/.claude/commands
+
+	# ---- settings.json (user-level, does NOT carry over to cloud) ----
+	cat >~/.claude/settings.json <<'SETTINGS_EOF'
 {
   "permissions": {
     "allow": [
@@ -239,15 +299,9 @@ cat >~/.claude/settings.json <<'SETTINGS_EOF'
 }
 SETTINGS_EOF
 
-# ============================================================
-# 10. Statusline script (Catppuccin Mocha theme)
-# ============================================================
-log "Statusline"
-cat >~/.claude/statusline-command.sh <<'STATUSLINE_EOF'
+	# ---- Statusline (Catppuccin Mocha) ----
+	cat >~/.claude/statusline-command.sh <<'STATUSLINE_EOF'
 #!/usr/bin/env bash
-# Claude Code status line — Catppuccin Mocha prompt style.
-# Receives JSON via stdin; uses jq to extract session context.
-
 MAUVE='\033[38;5;183m'
 PINK='\033[38;5;218m'
 BLUE='\033[38;5;111m'
@@ -258,7 +312,6 @@ DIM='\033[2m'
 RESET='\033[0m'
 
 input=$(cat)
-
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // ""')
 model=$(echo "$input" | jq -r '.model.display_name // ""')
 used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
@@ -268,10 +321,8 @@ if [ -n "$cwd" ]; then
     short_cwd="${cwd/#$HOME/~}"
     short_cwd=$(echo "$short_cwd" | awk -F'/' '{
         n = NF
-        if (n > 4) {
-            printf "..."
-            for (i = n-3; i <= n; i++) printf "/%s", $i
-        } else print $0
+        if (n > 4) { printf "..."; for (i = n-3; i <= n; i++) printf "/%s", $i }
+        else print $0
     }')
 else
     short_cwd=$(pwd | sed "s|^$HOME|~|")
@@ -285,36 +336,20 @@ fi
 
 printf "${MAUVE}%s@%s${RESET}" "$(whoami)" "$(hostname -s)"
 printf "  ${PINK}%s${RESET}" "$short_cwd"
-if [ -n "$git_branch" ]; then
-    printf "  ${BLUE} %s${RESET}" "$git_branch"
-fi
-if [ -n "$model" ]; then
-    printf "  ${TEAL}%s${RESET}" "$model"
-fi
-if [ -n "$session_name" ]; then
-    printf "  ${DIM}[%s]${RESET}" "$session_name"
-fi
+[ -n "$git_branch" ] && printf "  ${BLUE} %s${RESET}" "$git_branch"
+[ -n "$model" ] && printf "  ${TEAL}%s${RESET}" "$model"
+[ -n "$session_name" ] && printf "  ${DIM}[%s]${RESET}" "$session_name"
 if [ -n "$used_pct" ]; then
     pct_int=${used_pct%.*}
-    if [ "${pct_int:-0}" -ge 75 ]; then
-        ctx_color="$PEACH"
-    else
-        ctx_color="$GREEN"
-    fi
+    [ "${pct_int:-0}" -ge 75 ] && ctx_color="$PEACH" || ctx_color="$GREEN"
     printf "  ${ctx_color}ctx:%.0f%%${RESET}" "$used_pct"
 fi
 printf '\n'
 STATUSLINE_EOF
-chmod +x ~/.claude/statusline-command.sh
+	chmod +x ~/.claude/statusline-command.sh
 
-# ============================================================
-# 11. Custom commands
-# ============================================================
-log "Custom commands"
-mkdir -p ~/.claude/commands
-
-# Cozempic command
-cat >~/.claude/commands/cozempic.md <<'COZEMPIC_EOF'
+	# ---- Cozempic command ----
+	cat >~/.claude/commands/cozempic.md <<'COZEMPIC_EOF'
 ---
 description: Diagnose and prune bloated Claude Code context. Supports treat, reload, guard mode, and doctor.
 argument-hint: "[diagnose|treat|guard|doctor]"
@@ -326,119 +361,47 @@ Cozempic is installed as a CLI tool. If `cozempic` is not found, install with `p
 
 ## On Bare Invocation (no args)
 
-When the user runs `/cozempic` with no arguments:
-
-1. **First**, run a quick size check silently:
-   ```bash
-   cozempic current 2>/dev/null
-   ```
-
-2. **Then** present this summary and menu. Output something like:
-
-   > **Cozempic** — Context Weight-Loss Tool
-   >
-   > Current session: **X.XX MB** (N messages), **XX.XK tokens** (XX% context)
-   >
-   > Cozempic prunes bloated Claude Code sessions by collapsing progress ticks,
-   > deduplicating file reads, stripping metadata, and more. Prescriptions range
-   > from `gentle` (safe, ~50% savings) to `aggressive` (~90% savings).
-
-3. **Then** use `AskUserQuestion` with:
-
-**Question:** "What would you like to do?"
-**Header:** "Cozempic"
-**Options:**
-
-1. **Diagnose** — "Analyze bloat sources and recommend a prescription (read-only, no changes)"
-2. **Treat & Reload** (Recommended) — "Diagnose, prune session, and auto-open a new terminal with clean context"
-3. **Treat Only** — "Diagnose and prune session in-place (you resume manually with claude --resume)"
-4. **Guard Mode** — "Start a background sentinel that auto-prunes before compaction kills agent teams"
-
-Then follow the appropriate section below based on their choice.
+1. Run `cozempic current 2>/dev/null` silently.
+2. Present summary and menu via `AskUserQuestion`:
+   - **Diagnose** — Analyze bloat sources (read-only)
+   - **Treat & Reload** (Recommended) — Diagnose, prune, auto-open new terminal
+   - **Treat Only** — Prune in-place (resume manually with `claude --resume`)
+   - **Guard Mode** — Background sentinel that auto-prunes before compaction
 
 ## On Invocation With Args
 
-If the user passes arguments (e.g., `/cozempic diagnose`, `/cozempic treat`, `/cozempic guard`), skip the menu and go directly to the relevant section.
-
-If the user passes a prescription name (e.g., `/cozempic aggressive`), go to Treat & Reload with that prescription.
-
----
+Skip menu, go directly to the relevant section.
 
 ## Diagnose
 
-Run diagnosis and show results:
 ```bash
 cozempic current --diagnose
 ```
-The output includes **Tokens** (exact or heuristic estimate) and a **Context** bar showing % of the 200K context window used. Always surface both to the user.
 
-After showing results, suggest a prescription:
-- `gentle` — Safe, minimal: progress collapse + file-history dedup + metadata strip
-- `standard` — Recommended: + thinking blocks, tool trim, stale reads, system reminders
-- `aggressive` — Maximum: + error collapse, document dedup, mega-block trim, envelope strip
-
-Recommend based on session size:
-- Under 5MB: `gentle`
-- 5-20MB: `standard`
-- Over 20MB: `aggressive`
-
-Ask if they'd like to treat.
+Recommend: under 5MB → `gentle`, 5-20MB → `standard`, over 20MB → `aggressive`.
 
 ## Treat & Reload
 
-1. Run diagnosis first:
-   ```bash
-   cozempic current --diagnose
-   ```
-   **Important:** The output includes token count and context % bar — always surface these to the user.
-
-2. Recommend a prescription based on bloat profile, then dry-run:
-   ```bash
-   cozempic treat current -rx <prescription>
-   ```
-
-3. Show the dry-run results, then ask confirmation to apply. On confirmation, run `reload`:
-   ```bash
-   cozempic reload -rx <prescription>
-   ```
-   **Do NOT run `cozempic treat --execute` before `cozempic reload`** — reload already treats internally.
-
-4. Tell the user: *"Treatment applied. Type `/exit` — a new Terminal window will open automatically with the pruned session."*
+1. `cozempic current --diagnose`
+2. `cozempic treat current -rx <prescription>` (dry-run)
+3. On confirmation: `cozempic reload -rx <prescription>`
+   **Do NOT run `treat --execute` before `reload`** — reload treats internally.
 
 ## Treat Only
 
-Same as Treat & Reload but without the auto-resume.
-
-1. Diagnose, dry-run, confirm, then:
-   ```bash
-   cozempic treat current -rx <prescription> --execute
-   ```
-
-2. Tell the user: *"Treatment applied. To resume with the pruned session, exit and run `claude --resume`."*
+`cozempic treat current -rx <prescription> --execute`
 
 ## Guard Mode
 
-For sessions running agent teams, **always recommend guard mode**.
-
-```bash
-cozempic guard --threshold 50 -rx standard --interval 30
-```
-
-Tell the user: *"Guard is watching your session. If it crosses the threshold, it will auto-prune (protecting team state) and reload."*
+`cozempic guard --threshold 50 -rx standard --interval 30`
 
 ## Doctor
 
-```bash
-cozempic doctor        # Diagnose
-cozempic doctor --fix  # Auto-fix where possible
-```
+`cozempic doctor` / `cozempic doctor --fix`
 COZEMPIC_EOF
 
-# ============================================================
-# 12. Global CLAUDE.md
-# ============================================================
-log "Global CLAUDE.md"
-cat >~/.claude/CLAUDE.md <<'CLAUDEMD_EOF'
+	# ---- Global CLAUDE.md ----
+	cat >~/.claude/CLAUDE.md <<'CLAUDEMD_EOF'
 # Global Claude Instructions
 
 Be concise. Prefer editing existing files over creating new ones.
@@ -448,11 +411,8 @@ Be concise. Prefer editing existing files over creating new ones.
 - `grep` is aliased to `rg` (ripgrep) in interactive shells. When writing new shell code, always use `rg` directly with rg-native flags — never bare `grep`. Key differences: grep `-E` (extended regex) doesn't exist in rg (rg uses extended regex by default); grep `-oE 'pattern'` → rg `-o 'pattern'`; grep `-q` → rg `-q`.
 CLAUDEMD_EOF
 
-# ============================================================
-# 13. MCP config (global fallback for non-project sessions)
-# ============================================================
-log "MCP config"
-cat >~/.claude/.mcp.json <<'MCP_EOF'
+	# ---- MCP config ----
+	cat >~/.claude/.mcp.json <<'MCP_EOF'
 {
   "mcpServers": {
     "Textual-MCP": {
@@ -463,9 +423,18 @@ cat >~/.claude/.mcp.json <<'MCP_EOF'
   }
 }
 MCP_EOF
+}
+write_claude_config &
+track "$!" "Claude config"
 
 # ============================================================
-# 14. Timing
+# Wait for all parallel tracks
+# ============================================================
+log "Waiting for parallel installs"
+wait_all
+
+# ============================================================
+# Timing
 # ============================================================
 BOOTSTRAP_END=$(date +%s)
 log "Complete in $((BOOTSTRAP_END - BOOTSTRAP_START))s"
