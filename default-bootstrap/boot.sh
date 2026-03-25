@@ -455,10 +455,6 @@ log "MCP config"
 cat >~/.claude/.mcp.json <<'MCP_EOF'
 {
   "mcpServers": {
-    "CodSpeed": {
-      "type": "http",
-      "url": "https://mcp.codspeed.io/mcp"
-    },
     "Textual-MCP": {
       "command": "uv",
       "args": ["run", "--with", "textual-mcp-server", "textual-mcp-server"],
