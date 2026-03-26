@@ -20,6 +20,18 @@ PIDS=()
 
 log() { echo "=== Bootstrap: $1 ==="; }
 
+# Detect the user Claude Code will run as (not necessarily root)
+# Cloud VMs typically use 'user' or 'ubuntu'; we write config for whoever owns /home
+if [ -d /home/user ]; then
+	CLAUDE_USER="user"
+elif [ -d /home/ubuntu ]; then
+	CLAUDE_USER="ubuntu"
+else
+	CLAUDE_USER="root"
+fi
+CLAUDE_HOME=$(eval echo "~${CLAUDE_USER}")
+log "Running as $(whoami), writing config for ${CLAUDE_USER} (${CLAUDE_HOME})"
+
 # Track background jobs; fail the bootstrap if any critical one fails
 track() { PIDS+=("$!:$1"); }
 
@@ -128,7 +140,7 @@ install_binaries() {
 
 	# shfmt (shell formatter, not in Ubuntu repos)
 	if ! command -v shfmt &>/dev/null; then
-		curl -fsSL "https://github.com/mvdan/sh/releases/latest/download/shfmt_v3.10.0_linux_amd64" \
+		curl -fsSL "https://github.com/mvdan/sh/releases/download/v3.10.0/shfmt_v3.10.0_linux_amd64" \
 			-o /usr/local/bin/shfmt && chmod +x /usr/local/bin/shfmt
 	fi
 
@@ -190,11 +202,12 @@ track "$!" "binary downloads"
 # --- Track D: Claude Code config (instant, no network) ------
 write_claude_config() {
 	log "Claude Code config"
-	mkdir -p ~/.claude/commands
+	mkdir -p "${CLAUDE_HOME}/.claude/commands"
 
 	# ---- settings.json (user-level, does NOT carry over to cloud) ----
 	# Mirrors local ~/.claude/settings.json
-	cat >~/.claude/settings.json <<'SETTINGS_EOF'
+	# Bash(*) is intentional — the cloud sandbox is the security boundary
+	cat >"${CLAUDE_HOME}/.claude/settings.json" <<'SETTINGS_EOF'
 {
   "permissions": {
     "allow": [
@@ -224,16 +237,11 @@ write_claude_config() {
     "context7@claude-plugins-official": true,
     "document-skills@anthropic-agent-skills": true,
     "superpowers@superpowers-marketplace": true,
-    "shopify-qbo@my-claude-plugins": false,
     "astral@astral-sh": true,
-    "rust-analyzer@claude-code-lsps": false,
-    "rust-analyzer-lsp@claude-plugins-official": false,
     "typescript-lsp@claude-plugins-official": true,
-    "bash-language-server@claude-code-lsps": false,
     "yaml-language-server@claude-code-lsps": true,
     "superpowers-developing-for-claude-code@superpowers-marketplace": true,
     "plugin-dev@claude-plugins-official": true,
-    "archiuvium-plugin-creator@my-claude-plugins": false,
     "tracemeld@my-claude-plugins": true,
     "plannotator@plannotator": true,
     "bash-lsp@zircote-lsp": true,
@@ -283,12 +291,12 @@ write_claude_config() {
     }
   },
   "effortLevel": "high",
-  "model": "opus[1m]"
+  "model": "opus"
 }
 SETTINGS_EOF
 
 	# ---- Statusline (Catppuccin Mocha) ----
-	cat >~/.claude/statusline-command.sh <<'STATUSLINE_EOF'
+	cat >"${CLAUDE_HOME}/.claude/statusline-command.sh" <<'STATUSLINE_EOF'
 #!/usr/bin/env bash
 MAUVE='\033[38;5;183m'
 PINK='\033[38;5;218m'
@@ -334,10 +342,10 @@ if [ -n "$used_pct" ]; then
 fi
 printf '\n'
 STATUSLINE_EOF
-	chmod +x ~/.claude/statusline-command.sh
+	chmod +x "${CLAUDE_HOME}/.claude/statusline-command.sh"
 
 	# ---- Cozempic command ----
-	cat >~/.claude/commands/cozempic.md <<'COZEMPIC_EOF'
+	cat >"${CLAUDE_HOME}/.claude/commands/cozempic.md" <<'COZEMPIC_EOF'
 ---
 description: Diagnose and prune bloated Claude Code context. Supports treat, reload, guard mode, and doctor.
 argument-hint: "[diagnose|treat|guard|doctor]"
@@ -389,7 +397,7 @@ Recommend: under 5MB → `gentle`, 5-20MB → `standard`, over 20MB → `aggress
 COZEMPIC_EOF
 
 	# ---- Global CLAUDE.md ----
-	cat >~/.claude/CLAUDE.md <<'CLAUDEMD_EOF'
+	cat >"${CLAUDE_HOME}/.claude/CLAUDE.md" <<'CLAUDEMD_EOF'
 # Global Claude Instructions
 
 Be concise. Prefer editing existing files over creating new ones.
@@ -400,7 +408,7 @@ Be concise. Prefer editing existing files over creating new ones.
 CLAUDEMD_EOF
 
 	# ---- MCP config ----
-	cat >~/.claude/.mcp.json <<'MCP_EOF'
+	cat >"${CLAUDE_HOME}/.claude/.mcp.json" <<'MCP_EOF'
 {
   "mcpServers": {
     "Textual-MCP": {
@@ -409,12 +417,17 @@ CLAUDEMD_EOF
       "env": {}
     },
     "ripvec": {
-      "command": "ripvec-mcp",
+      "command": "/usr/local/bin/ripvec-mcp",
       "args": []
     }
   }
 }
 MCP_EOF
+
+	# Fix ownership if writing to another user's home
+	if [ "${CLAUDE_USER}" != "root" ]; then
+		chown -R "${CLAUDE_USER}:${CLAUDE_USER}" "${CLAUDE_HOME}/.claude"
+	fi
 }
 write_claude_config </dev/null &
 track "$!" "Claude config"
@@ -424,6 +437,15 @@ track "$!" "Claude config"
 # ============================================================
 log "Waiting for parallel installs"
 wait_all
+
+# ============================================================
+# Verify critical tools landed
+# ============================================================
+for cmd in ripvec-mcp node pyright rg shfmt jq; do
+	command -v "$cmd" >/dev/null 2>&1 || echo "WARNING: $cmd not found" >&2
+done
+[ -f "${CLAUDE_HOME}/.claude/settings.json" ] || echo "WARNING: settings.json not written" >&2
+[ -f "${CLAUDE_HOME}/.claude/.mcp.json" ] || echo "WARNING: .mcp.json not written" >&2
 
 # ============================================================
 # Timing
