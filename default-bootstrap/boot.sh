@@ -65,7 +65,7 @@ apt-get install -y -qq \
 # After apt, these four tracks have no shared state:
 #   A) npm global packages  (LSP servers, tracemeld)
 #   B) pip global packages  (Python LSP tools, cozempic, textual-mcp)
-#   C) Rust toolchain + ripvec build
+#   C) Rust toolchain + ripvec (pre-built binary from latest GitHub release)
 #   D) Binary downloads     (shfmt, terraform-ls, delta)
 #   E) Claude Code config   (instant writes, no network)
 # ============================================================
@@ -142,15 +142,28 @@ install_rust() {
 	cargo install cargo-audit cargo-deny cargo-outdated cargo-machete \
 		>/dev/null 2>&1 || true
 
-	# ripvec (code embedding + MCP server)
-	local ripvec_dir="/opt/ripvec"
-	if [ ! -d "$ripvec_dir" ]; then
-		git clone --depth 1 https://github.com/fnordpig/ripvec.git "$ripvec_dir" >/dev/null 2>&1
-		cd "$ripvec_dir"
-		cargo build --release >/dev/null 2>&1
-		cp target/release/ripvec-mcp /usr/local/bin/ 2>/dev/null || true
-		cp target/release/ripvec /usr/local/bin/ 2>/dev/null || true
-		cd /
+	# ripvec (code embedding + MCP server) — download pre-built from latest release
+	if ! command -v ripvec-mcp &>/dev/null; then
+		local target="x86_64-unknown-linux-gnu"
+		local tarball
+		tarball=$(curl -fsSL "https://api.github.com/repos/fnordpig/ripvec/releases/latest" |
+			jq -r ".assets[] | select(.name | test(\"${target}\")) | .browser_download_url")
+		if [ -n "$tarball" ]; then
+			curl -fsSL "$tarball" -o /tmp/ripvec.tar.gz
+			tar xzf /tmp/ripvec.tar.gz -C /tmp/
+			cp /tmp/ripvec-*/ripvec /usr/local/bin/ 2>/dev/null || true
+			cp /tmp/ripvec-*/ripvec-mcp /usr/local/bin/ 2>/dev/null || true
+			rm -rf /tmp/ripvec*
+		else
+			# Fallback: build from source if no release found
+			local ripvec_dir="/opt/ripvec"
+			git clone --depth 1 https://github.com/fnordpig/ripvec.git "$ripvec_dir" >/dev/null 2>&1
+			cd "$ripvec_dir"
+			cargo build --release >/dev/null 2>&1
+			cp target/release/ripvec-mcp /usr/local/bin/ 2>/dev/null || true
+			cp target/release/ripvec /usr/local/bin/ 2>/dev/null || true
+			cd /
+		fi
 	fi
 }
 install_rust &
