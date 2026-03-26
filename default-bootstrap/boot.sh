@@ -58,7 +58,7 @@ apt-get install -y -qq \
 	build-essential cmake pkg-config autoconf automake libtool \
 	jq ripgrep fd-find unzip zip \
 	curl wget \
-	libssl-dev libsqlite3-dev zlib1g-dev libffi-dev \
+	libssl-dev libsqlite3-dev zlib1g-dev libffi-dev libopenblas-dev \
 	python3-pip python3-venv python3-dev \
 	shellcheck \
 	clangd clang-format \
