@@ -413,7 +413,7 @@ CLAUDEMD_EOF
   "mcpServers": {
     "Textual-MCP": {
       "command": "uv",
-      "args": ["run", "--with", "textual-mcp-server", "textual-mcp-server"],
+      "args": ["run", "--with", "textual-mcp-server", "textual-mcp"],
       "env": {}
     },
     "ripvec": {
