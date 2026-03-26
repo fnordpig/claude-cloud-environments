@@ -65,9 +65,8 @@ apt-get install -y -qq \
 # After apt, these four tracks have no shared state:
 #   A) npm global packages  (LSP servers, tracemeld)
 #   B) pip global packages  (Python LSP tools, cozempic, textual-mcp)
-#   C) Rust toolchain + ripvec (pre-built binary from latest GitHub release)
-#   D) Binary downloads     (shfmt, terraform-ls, delta)
-#   E) Claude Code config   (instant writes, no network)
+#   C) Binary downloads     (shfmt, terraform-ls, delta, ripvec)
+#   D) Claude Code config   (instant writes, no network)
 # ============================================================
 
 # --- Track A: npm globals -----------------------------------
@@ -123,53 +122,7 @@ install_pip() {
 install_pip </dev/null &
 track "$!" "pip globals"
 
-# --- Track C: Rust toolchain + ripvec -----------------------
-install_rust() {
-	log "Rust toolchain + ripvec"
-
-	# Rust toolchain
-	if ! command -v cargo &>/dev/null; then
-		curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y >/dev/null 2>&1
-		# shellcheck source=/dev/null
-		source "$HOME/.cargo/env"
-	fi
-	export PATH="$HOME/.cargo/bin:$PATH"
-
-	# rust-analyzer for the Rust LSP plugin
-	rustup component add rust-analyzer >/dev/null 2>&1 || true
-
-	# Cargo dev tools (used by rust-lsp hooks)
-	cargo install cargo-audit cargo-deny cargo-outdated cargo-machete \
-		>/dev/null 2>&1 || true
-
-	# ripvec (code embedding + MCP server) — download pre-built from latest release
-	if ! command -v ripvec-mcp &>/dev/null; then
-		local target="x86_64-unknown-linux-gnu"
-		local tarball
-		tarball=$(curl -fsSL "https://api.github.com/repos/fnordpig/ripvec/releases/latest" |
-			jq -r ".assets[] | select(.name | test(\"${target}\")) | .browser_download_url")
-		if [ -n "$tarball" ]; then
-			curl -fsSL "$tarball" -o /tmp/ripvec.tar.gz
-			tar xzf /tmp/ripvec.tar.gz -C /tmp/
-			cp /tmp/ripvec-*/ripvec /usr/local/bin/ 2>/dev/null || true
-			cp /tmp/ripvec-*/ripvec-mcp /usr/local/bin/ 2>/dev/null || true
-			rm -rf /tmp/ripvec*
-		else
-			# Fallback: build from source if no release found
-			local ripvec_dir="/opt/ripvec"
-			git clone --depth 1 https://github.com/fnordpig/ripvec.git "$ripvec_dir" >/dev/null 2>&1
-			cd "$ripvec_dir"
-			cargo build --release >/dev/null 2>&1
-			cp target/release/ripvec-mcp /usr/local/bin/ 2>/dev/null || true
-			cp target/release/ripvec /usr/local/bin/ 2>/dev/null || true
-			cd /
-		fi
-	fi
-}
-install_rust </dev/null &
-track "$!" "Rust + ripvec"
-
-# --- Track D: Binary downloads ------------------------------
+# --- Track C: Binary downloads ------------------------------
 install_binaries() {
 	log "Binary downloads"
 
@@ -215,11 +168,26 @@ install_binaries() {
 			tar -xzf /tmp/tokei.tar.gz -C /usr/local/bin/ tokei &&
 			rm /tmp/tokei.tar.gz || true
 	fi
+
+	# ripvec (code embedding + MCP server)
+	if ! command -v ripvec-mcp &>/dev/null; then
+		local target="x86_64-unknown-linux-gnu"
+		local tarball
+		tarball=$(curl -fsSL "https://api.github.com/repos/fnordpig/ripvec/releases/latest" |
+			jq -r ".assets[] | select(.name | test(\"${target}\")) | .browser_download_url")
+		if [ -n "$tarball" ]; then
+			curl -fsSL "$tarball" -o /tmp/ripvec.tar.gz
+			tar xzf /tmp/ripvec.tar.gz -C /tmp/
+			cp /tmp/ripvec-*/ripvec /usr/local/bin/ 2>/dev/null || true
+			cp /tmp/ripvec-*/ripvec-mcp /usr/local/bin/ 2>/dev/null || true
+			rm -rf /tmp/ripvec*
+		fi
+	fi
 }
 install_binaries </dev/null &
 track "$!" "binary downloads"
 
-# --- Track E: Claude Code config (instant, no network) ------
+# --- Track D: Claude Code config (instant, no network) ------
 write_claude_config() {
 	log "Claude Code config"
 	mkdir -p ~/.claude/commands
