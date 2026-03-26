@@ -96,7 +96,7 @@ install_npm() {
 		tracemeld@latest \
 		>/dev/null 2>&1
 }
-install_npm &
+install_npm </dev/null &
 track "$!" "npm globals"
 
 # --- Track B: pip globals -----------------------------------
@@ -120,7 +120,7 @@ install_pip() {
 	# Textual-MCP (Textual TUI framework MCP server)
 	pip install --break-system-packages -q textual-mcp-server >/dev/null 2>&1 || true
 }
-install_pip &
+install_pip </dev/null &
 track "$!" "pip globals"
 
 # --- Track C: Rust toolchain + ripvec -----------------------
@@ -166,7 +166,7 @@ install_rust() {
 		fi
 	fi
 }
-install_rust &
+install_rust </dev/null &
 track "$!" "Rust + ripvec"
 
 # --- Track D: Binary downloads ------------------------------
@@ -216,7 +216,7 @@ install_binaries() {
 			rm /tmp/tokei.tar.gz || true
 	fi
 }
-install_binaries &
+install_binaries </dev/null &
 track "$!" "binary downloads"
 
 # --- Track E: Claude Code config (instant, no network) ------
@@ -448,7 +448,7 @@ CLAUDEMD_EOF
 }
 MCP_EOF
 }
-write_claude_config &
+write_claude_config </dev/null &
 track "$!" "Claude config"
 
 # ============================================================
