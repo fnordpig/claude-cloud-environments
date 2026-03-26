@@ -225,6 +225,7 @@ write_claude_config() {
 	mkdir -p ~/.claude/commands
 
 	# ---- settings.json (user-level, does NOT carry over to cloud) ----
+	# Mirrors local ~/.claude/settings.json
 	cat >~/.claude/settings.json <<'SETTINGS_EOF'
 {
   "permissions": {
@@ -253,12 +254,18 @@ write_claude_config() {
     "skill-creator@claude-plugins-official": true,
     "ralph-loop@claude-plugins-official": true,
     "context7@claude-plugins-official": true,
-    "typescript-lsp@claude-plugins-official": true,
-    "plugin-dev@claude-plugins-official": true,
     "document-skills@anthropic-agent-skills": true,
     "superpowers@superpowers-marketplace": true,
-    "superpowers-developing-for-claude-code@superpowers-marketplace": true,
+    "shopify-qbo@my-claude-plugins": false,
     "astral@astral-sh": true,
+    "rust-analyzer@claude-code-lsps": false,
+    "rust-analyzer-lsp@claude-plugins-official": false,
+    "typescript-lsp@claude-plugins-official": true,
+    "bash-language-server@claude-code-lsps": false,
+    "yaml-language-server@claude-code-lsps": true,
+    "superpowers-developing-for-claude-code@superpowers-marketplace": true,
+    "plugin-dev@claude-plugins-official": true,
+    "archiuvium-plugin-creator@my-claude-plugins": false,
     "tracemeld@my-claude-plugins": true,
     "plannotator@plannotator": true,
     "bash-lsp@zircote-lsp": true,
@@ -432,6 +439,10 @@ CLAUDEMD_EOF
       "command": "uv",
       "args": ["run", "--with", "textual-mcp-server", "textual-mcp-server"],
       "env": {}
+    },
+    "ripvec": {
+      "command": "ripvec-mcp",
+      "args": []
     }
   }
 }
